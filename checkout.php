@@ -1,11 +1,10 @@
 <?php
-
-// No início do checkout.php, antes do DOCTYPE
+// checkout.php
 session_start();
 
 define('SECURITY_INIT', true);
 require_once './includes/security_init.php';
-applySecurity('nome_da_pagina');
+applySecurity('checkout');
 
 // Gerar tokens
 if (empty($_SESSION['checkout_token'])) {
@@ -18,10 +17,12 @@ if (empty($_SESSION['csrf_token'])) {
 $securityToken = $_SESSION['checkout_token'];
 $csrfToken = $_SESSION['csrf_token'];
 
-// Gerar nonce para esta sessão (não pode ser reutilizado)
+// ========== NONCE CORRETO ==========
+// Gerar nonce e armazenar na sessão
 $pixNonce = bin2hex(random_bytes(32));
 $_SESSION['pix_nonce'] = $pixNonce;
 $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
+$_SESSION['pix_nonce_used'] = false; // Marcar se já foi usado
 
 ?>
 
@@ -34,6 +35,7 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
     <meta name="csrf-token" content="<?php echo $csrfToken; ?>">
     <meta name="security-token" content="<?php echo $securityToken; ?>">
     <meta name="pix-nonce" content="<?php echo $pixNonce; ?>">
+
     <title>Flow Pag</title>
     <style>
         :root {
@@ -1243,17 +1245,17 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
         var plate = (params.get('plate') || '').toUpperCase();
         var amount = parseFloat(params.get('amount')) || parseFloat(sessionStorage.getItem('debitoTotal')) || 38.90;
 
-        // ========== TOKENS DE SEGURANÇA (vindos do PHP) ==========
+        // ========== TOKENS DE SEGURANÇA ==========
         var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         var securityToken = document.querySelector('meta[name="security-token"]')?.content || '';
-        var pixNonceFromServer = document.querySelector('meta[name="pix-nonce"]')?.content || '';
+        var pixNonce = document.querySelector('meta[name="pix-nonce"]')?.content || '';
 
         var requestCount = 0;
         var lastRequestTime = 0;
         var MAX_REQUESTS_PER_HOUR = 3;
         var currentTxId = null;
         var totalSeconds = 15 * 60;
-        var nonceUsed = false;
+        var canGenerate = true; // Controla se pode gerar PIX (evita duplicidade)
 
         function formatMoney(v) {
             return 'R$ ' + v.toFixed(2).replace('.', ',');
@@ -1261,15 +1263,13 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
 
         function showError(message) {
             var errorDiv = document.createElement('div');
-            errorDiv.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#dc2626;color:white;padding:12px 20px;border-radius:12px;z-index:10000;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+            errorDiv.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#dc2626;color:white;padding:12px 20px;border-radius:12px;z-index:10000;font-size:14px;';
             errorDiv.textContent = '⚠️ ' + message;
             document.body.appendChild(errorDiv);
-            setTimeout(function () {
-                if (errorDiv) errorDiv.remove();
-            }, 5000);
+            setTimeout(function () { if (errorDiv) errorDiv.remove(); }, 5000);
         }
 
-        // Formatar valores na tela
+        // Formatar valores
         var amountStr = formatMoney(amount);
         document.querySelector('.summary__value').textContent = amountStr;
         document.querySelector('.pix-value').textContent = amountStr;
@@ -1291,7 +1291,7 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
             document.getElementById('backLink').href = 'plate-info.html?plate=' + encodeURIComponent(plate);
         }
 
-        // Timer do PIX
+        // Timer
         function startTimer() {
             var display = document.getElementById('timerDisplay');
             if (!display) return;
@@ -1304,6 +1304,7 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                     if (btn) {
                         btn.disabled = false;
                         btn.textContent = 'Gerar Novo PIX';
+                        canGenerate = true;
                     }
                     return;
                 }
@@ -1313,20 +1314,14 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
             }, 1000);
         }
 
-        // Função para gerar nonce
-        function getNonce() {
-            var clientNonce = Math.random().toString(36).substring(2) + Date.now().toString(36);
-            return pixNonceFromServer + '_' + clientNonce;
-        }
-
-        // ========== EVENTO PRINCIPAL DO BOTÃO (APENAS UM) ==========
+        // ========== EVENTO PRINCIPAL (APENAS UM) ==========
         document.getElementById('btnGerarPix').addEventListener('click', async function () {
             var btn = this;
             var now = Date.now();
 
-            // Verificar se nonce já foi usado
-            if (nonceUsed) {
-                showError('Esta sessão já gerou um PIX. Recarregue a página para gerar outro.');
+            // Impedir múltiplos cliques
+            if (!canGenerate) {
+                showError('Aguarde, gerando PIX...');
                 return;
             }
 
@@ -1342,15 +1337,15 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                 lastRequestTime = now;
             }
 
+            canGenerate = false;
             btn.disabled = true;
             btn.textContent = '🔄 Gerando PIX...';
 
-            var currentNonce = getNonce();
             var payload = {
                 productTitle: 'FF00BX',
                 amount: amount,
                 plate: plate,
-                nonce: currentNonce,
+                nonce: pixNonce, // Envia o nonce do meta tag
                 timestamp: Date.now()
             };
 
@@ -1377,7 +1372,6 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                 try {
                     data = await response.json();
                 } catch (e) {
-                    console.error('Erro ao parsear JSON:', e);
                     throw new Error('Resposta inválida do servidor');
                 }
 
@@ -1385,25 +1379,26 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
 
                 if (!response.ok || !data.success) {
                     var errorMsg = data.error || 'Erro ao gerar PIX';
-                    var errorCode = data.code || '';
 
-                    if (errorCode === 'RATE_LIMIT') {
+                    if (data.code === 'RATE_LIMIT') {
                         showError('Limite de PIX excedido. Aguarde 1 hora.');
-                    } else if (errorCode === 'INVALID_CSRF') {
+                    } else if (data.code === 'INVALID_CSRF') {
                         showError('Sessão expirada. Recarregue a página.');
+                        setTimeout(function () { location.reload(); }, 2000);
+                    } else if (data.code === 'INVALID_NONCE' || data.code === 'NONCE_EXPIRED' || data.code === 'NONCE_ALREADY_USED') {
+                        showError('Token expirado ou já utilizado. Recarregue a página.');
                         setTimeout(function () { location.reload(); }, 2000);
                     } else {
                         showError(errorMsg);
                     }
 
+                    canGenerate = true;
                     btn.disabled = false;
                     btn.textContent = 'Gerar Pix';
                     return;
                 }
 
                 // Sucesso!
-                nonceUsed = true;
-
                 if (data.data && data.data.txid) {
                     currentTxId = data.data.txid;
                 }
@@ -1412,19 +1407,16 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                 btn.style.background = '#16a34a';
 
                 var pixSection = document.getElementById('pixQrSection');
-                if (pixSection) {
-                    pixSection.style.display = 'block';
-                }
+                if (pixSection) pixSection.style.display = 'block';
 
                 var pixCodeInput = document.getElementById('pixCode');
                 if (pixCodeInput && data.data && data.data.pixCopiaECola) {
                     pixCodeInput.value = data.data.pixCopiaECola;
                 }
 
-                const qrContainer = document.querySelector('.pix-qr');
+                var qrContainer = document.querySelector('.pix-qr');
                 if (qrContainer) {
                     qrContainer.innerHTML = '';
-
                     if (data.data && data.data.qrCode) {
                         var img = document.createElement('img');
                         img.src = data.data.qrCode;
@@ -1434,36 +1426,33 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                         };
                         qrContainer.appendChild(img);
                         startTimer();
-
-                        setTimeout(function () {
-                            pixSection?.scrollIntoView({ behavior: 'smooth' });
-                        }, 300);
-                    } else {
-                        qrContainer.innerHTML = '<div style="font-size:12px;color:#666;">Copie o código PIX abaixo</div>';
+                        setTimeout(function () { pixSection?.scrollIntoView({ behavior: 'smooth' }); }, 300);
                     }
                 }
 
+                // Nonce foi usado, não pode mais gerar PIX nesta sessão
                 setTimeout(function () {
-                    btn.textContent = 'Gerar Pix';
+                    btn.textContent = 'PIX Gerado';
                     btn.style.background = '';
-                    btn.disabled = false;
+                    btn.disabled = true; // Desabilita permanentemente após gerar
                 }, 5000);
 
             } catch (error) {
                 console.error('Error:', error);
                 btn.textContent = '❌ Erro - Tentar novamente';
                 btn.style.background = '#dc2626';
-                showError(error.message || 'Erro ao gerar PIX. Tente novamente.');
+                showError(error.message || 'Erro ao gerar PIX');
+                canGenerate = true;
+                btn.disabled = false;
 
                 setTimeout(function () {
                     btn.textContent = 'Gerar Pix';
                     btn.style.background = '';
-                    btn.disabled = false;
                 }, 3000);
             }
         });
 
-        // Botão copiar código PIX
+        // Botão copiar
         var copyBtn = document.getElementById('btnCopy');
         if (copyBtn) {
             copyBtn.addEventListener('click', function () {
@@ -1473,24 +1462,12 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
                     document.execCommand('copy');
                     this.textContent = 'Copiado!';
                     var self = this;
-                    setTimeout(function () {
-                        if (self) self.textContent = 'Copiar';
-                    }, 2000);
+                    setTimeout(function () { if (self) self.textContent = 'Copiar'; }, 2000);
                 }
             });
         }
 
-        // Fechar modal
-        var closeModalBtn = document.getElementById('btnFecharModal');
-        if (closeModalBtn) {
-            closeModalBtn.addEventListener('click', function () {
-                var modal = document.getElementById('zapayPaidModal');
-                if (modal) modal.classList.remove('active');
-                window.location.href = 'pedagio.html';
-            });
-        }
-
-        // Proteção anti-bot no frontend
+        // Proteção anti-bot
         document.addEventListener('keydown', function (e) {
             if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
                 e.preventDefault();
@@ -1502,7 +1479,7 @@ $_SESSION['pix_nonce_expires'] = time() + 300; // 5 minutos
             console.log = function () { };
         }
 
-        console.log('✅ Sistema de segurança ativado');
+        console.log('✅ Sistema pronto - Nonce:', pixNonce ? 'carregado' : 'não carregado');
     </script>
 </body>
 

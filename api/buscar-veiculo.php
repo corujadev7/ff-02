@@ -3,12 +3,17 @@
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
-// Incluir logger
-if (file_exists('../../includes/Logger.php')) {
-    require_once '../../includes/Logger.php';
-    $logger = new Logger();
+// Incluir config (define Database) e Logger
+if (file_exists('../config.php') && file_exists('../includes/Logger.php')) {
+    require_once '../config.php';
+    require_once '../includes/Logger.php';
+    try {
+        $logger = new Logger();
+    } catch (Throwable $e) {
+        error_log('[buscar-veiculo] Logger init failed: ' . $e->getMessage());
+        $logger = null;
+    }
 } else {
-    // Fallback se o arquivo não existir
     $logger = null;
 }
 

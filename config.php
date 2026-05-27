@@ -1117,5 +1117,5 @@ function installDatabase() {
 }
 
 // Run installation if needed
-installDatabase();
+//installDatabase();
 ?>
