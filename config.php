@@ -17,7 +17,7 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-i
 define('DB_HOST', 'localhost');
 define('DB_NAME', 'toll_system');
 define('DB_USER', 'root');
-define('DB_PASS', '');
+define('DB_PASS', 'johny@123');
 define('DB_CHARSET', 'utf8mb4');
 
 // Security Configuration
@@ -1091,16 +1091,83 @@ function installDatabase() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         
         // Create blocked_ips table
+        // expires_at → DATETIME NULL: TIMESTAMP sem DEFAULT explícito recebe
+        // '0000-00-00' no MySQL, proibido pelo NO_ZERO_DATE do strict mode padrão.
         $conn->exec("CREATE TABLE IF NOT EXISTS blocked_ips (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            ip VARCHAR(45) UNIQUE NOT NULL,
-            reason TEXT,
-            expires_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_ip (ip),
-            INDEX idx_expires (expires_at)
+            id         INT         NOT NULL AUTO_INCREMENT,
+            ip         VARCHAR(45) NOT NULL,
+            reason     TEXT        NULL,
+            expires_at DATETIME    NULL,
+            created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            UNIQUE KEY   uniq_ip    (ip),
+            INDEX        idx_ip     (ip),
+            INDEX        idx_expires (expires_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-        
+
+        // ── Logger tables ──────────────────────────────────────────────────
+        // Regra MySQL ≤ 5.6 / strict mode 5.7+:
+        //   • Máx. 1 TIMESTAMP com DEFAULT CURRENT_TIMESTAMP por tabela.
+        //   • Colunas de data não-auto → DATETIME NULL (evita NO_ZERO_DATE).
+
+        // Consultas de placas feitas pelos usuários
+        $conn->exec("CREATE TABLE IF NOT EXISTS plate_search_logs (
+            id             INT          NOT NULL AUTO_INCREMENT,
+            placa          VARCHAR(20)  NOT NULL,
+            ip             VARCHAR(45)  NULL,
+            user_agent     TEXT         NULL,
+            resultado      VARCHAR(20)  NOT NULL DEFAULT 'found',
+            dados_veiculo  TEXT         NULL,
+            tempo_resposta INT          NULL,
+            created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            INDEX idx_placa   (placa),
+            INDEX idx_ip      (ip),
+            INDEX idx_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Acessos às páginas do sistema
+        $conn->exec("CREATE TABLE IF NOT EXISTS page_access_logs (
+            id                 INT          NOT NULL AUTO_INCREMENT,
+            ip                 VARCHAR(45)  NULL,
+            pagina             VARCHAR(500) NULL,
+            metodo             VARCHAR(10)  NULL,
+            user_agent         TEXT         NULL,
+            referer            TEXT         NULL,
+            query_string       TEXT         NULL,
+            tempo_carregamento INT          NULL,
+            created_at         TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            INDEX idx_ip      (ip),
+            INDEX idx_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Estatísticas por IP (visitas + consultas de placa)
+        $conn->exec("CREATE TABLE IF NOT EXISTS ip_stats (
+            id                    INT         NOT NULL AUTO_INCREMENT,
+            ip                    VARCHAR(45) NOT NULL,
+            total_visitas         INT         NOT NULL DEFAULT 0,
+            total_consultas_placa INT         NOT NULL DEFAULT 0,
+            primeira_visita       DATETIME    NULL,
+            ultima_visita         DATETIME    NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY   uniq_ip (ip),
+            INDEX        idx_ip  (ip)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // IPs bloqueados pelo módulo Logger/admin
+        $conn->exec("CREATE TABLE IF NOT EXISTS ip_blocks (
+            id         INT         NOT NULL AUTO_INCREMENT,
+            ip         VARCHAR(45) NOT NULL,
+            motivo     TEXT        NULL,
+            expires_at DATETIME    NULL,
+            created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            UNIQUE KEY   uniq_ip     (ip),
+            INDEX        idx_ip      (ip),
+            INDEX        idx_expires (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
         // Insert default admin user if not exists
         $check = $conn->query("SELECT COUNT(*) FROM admin_users")->fetchColumn();
         if ($check == 0) {
